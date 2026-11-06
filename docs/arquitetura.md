@@ -169,3 +169,377 @@ Essas suposições devem ser confirmadas antes de decisões arquiteturais irreve
 12. Quais decisões anteriores devem ser preservadas e quais interfaces da aplicação
     já são contratos?
 
+## 9. Responsabilidades e limites
+
+Esta seção é um desenho conceitual. Os nomes abaixo representam responsabilidades,
+não tecnologias ou componentes já escolhidos.
+
+| Responsabilidade | Faz | Não faz | Base |
+|---|---|---|---|
+| Aplicação online | Recebe requisições dos consumidores ainda não identificados e consulta/usa o modelo publicado por uma interface estável. | Não treina, não altera o checkpoint e não promove modelos. | RA-002; separação online/batch é decisão arquitetural sem requisito explícito. |
+| Ingestão/registro de dados | Disponibiliza dados e seus identificadores/metadados para o processamento batch. | Não decide sozinha que um dado é elegível sem a política de novidade. | RA-001; detalhes são lacuna. |
+| Orquestração batch | Inicia uma execução diária, adquire exclusividade, coordena seleção, qualidade, treinamento, validação e publicação do resultado. | Não deve publicar modelo que falhe nos critérios de validação definidos. | RA-001; proteção de integridade é decisão sem limiar documentado. |
+| Seleção incremental | Determina o conjunto de dados novos a partir do checkpoint/watermark e produz uma seleção auditável. | Não deve avançar o checkpoint antes da conclusão definida para a execução. | RA-001; política exata é lacuna. |
+| Treinamento/retreinamento | Gera candidato usando somente a seleção da execução e parâmetros versionados. | Não deve ler implicitamente dados fora da seleção registrada. | RA-001; reprodutibilidade é atributo a esclarecer. |
+| Validação e promoção | Compara o candidato com critérios de qualidade e decide, conforme política aprovada, se ele pode ser registrado/publicado. | Não substitui o modelo ativo sem evidência de validação. | R-004; critérios e aprovador não foram definidos. |
+| Registro de modelos | Mantém versões, artefatos, metadados, métricas e estado de promoção. | Não define os critérios de negócio ou de qualidade. | Necessidade derivada de rastreabilidade; decisão sem requisito explícito. |
+| Operação/observabilidade | Acompanha execução, falhas, métricas, alertas, custos e trilha de auditoria. | Não deve mascarar falhas nem converter execução inconclusa em sucesso. | Atributos de qualidade a esclarecer; decisão sem SLA. |
+
+### Limites de sistema
+
+- **Dentro do sistema:** aplicação em `Site/`, coordenação do job diário, seleção de
+  dados novos, treinamento/retreinamento, validação, versionamento e publicação de
+  modelos — os três últimos ainda dependem de confirmação do escopo.
+- **Fora do sistema:** origem dos dados, consumidores online, identidade dos atores,
+  infraestrutura de agendamento e serviços de armazenamento não foram identificados.
+- **Não decidido:** se a aplicação executa inferência localmente, chama um serviço
+  de modelo, ou usa outra integração; se dados e modelos compartilham armazenamento;
+  e se o job é um processo interno ou uma plataforma externa.
+
+## 10. Interfaces conceituais
+
+As interfaces seguintes são contratos a especificar; não são APIs existentes.
+
+| Interface | Direção | Conteúdo mínimo a definir | Invariantes propostos | Estado |
+|---|---|---|---|---|
+| `OnlineRequest` / `OnlineResponse` | Consumidor ↔ aplicação | Identidade da requisição, entrada, resposta, versão do modelo e erro | Não expor dados ou artefatos além da autorização; versão usada deve ser rastreável | Decisão sem requisito |
+| `NewDataSelection` | ingestão ↔ batch | Identificador da fonte, período/corte, IDs selecionados, checksum/contagem e watermark anterior | Seleção imutável por execução; nenhum dado fora dela entra no treino | Derivada de RA-001 |
+| `TrainingRun` | orquestração ↔ treinamento | ID da execução, seleção, código, configuração, ambiente e saída | Reexecução com o mesmo identificador não cria efeitos duplicados | Decisão sem requisito |
+| `ValidationResult` | treinamento ↔ validação/promoção | Métricas, conjunto de avaliação, comparação com baseline e decisão | Promoção exige resultado completo e critérios versionados | R-004; limiares ausentes |
+| `ModelArtifact` | treinamento/registro ↔ aplicação | Artefato, versão, assinatura/checksum, metadados e estado | Aplicação usa somente versão registrada como ativa | Decisão sem requisito |
+| `Checkpoint` | seleção ↔ controle de execução | Watermark, versão do esquema/política e estado committed | Avanço atômico apenas após o ponto de commit definido | RA-001; política de commit é lacuna |
+| `RunEvent` | todos os componentes ↔ observabilidade | IDs correlacionados, estado, timestamps, métricas, erro e custo | Eventos não devem conter dados pessoais sem justificativa e proteção | Segurança/LGPD é lacuna |
+
+### Alternativas de integração
+
+1. **Serviço de inferência separado:** favorece isolamento e troca de modelo, mas
+   adiciona uma interface operacional e um ponto de falha.
+2. **Inferência dentro da aplicação:** reduz hops e operação, mas acopla ciclo de
+   vida do modelo ao deploy da aplicação.
+3. **Artefato compartilhado por armazenamento:** simples conceitualmente, porém
+   exige controle de concorrência, integridade e permissões.
+
+Não há requisito para escolher entre as alternativas. A escolha depende de
+latência, volume, segurança, frequência de publicação e responsabilidades operacionais
+que ainda não foram documentados.
+
+## 11. Visões C4 conceituais
+
+Os diagramas mostram somente relações confirmadas ou explicitamente marcadas como
+não especificadas. `System_Boundary` e `Container_Boundary` são limites lógicos,
+não compromissos de implantação.
+
+### 11.1 Contexto
+
+```mermaid
+C4Context
+title Contexto — sistema com aplicação online e treinamento diário
+
+Person(actor, "Consumidor/ator", "Identidade e objetivo não especificados")
+System(system, "Sistema em análise", "Aplicação online e processo diário de treinamento/retreinamento")
+System_Ext(dataSource, "Origem de dados", "Fonte não identificada")
+System_Ext(scheduler, "Agendador diário", "Cron job ao final do dia; tecnologia não especificada")
+
+Rel(actor, system, "Usa a aplicação", "Interface não especificada")
+Rel(dataSource, system, "Disponibiliza dados novos", "Contrato não especificado")
+Rel(scheduler, system, "Dispara treinamento/retreinamento diário", "Agendamento")
+```
+
+### 11.2 Contêineres lógicos
+
+```mermaid
+C4Container
+title Contêineres lógicos — online e batch
+
+Person(actor, "Consumidor/ator", "Não especificado")
+System_Boundary(system, "Sistema em análise") {
+  Container(web, "Aplicação online", "Angular CLI 22.1.7 observado em Site/", "Recebe solicitações e usa o modelo ativo")
+  Container(ingest, "Ingestão/registro de dados", "Tecnologia não especificada", "Registra dados e metadados elegíveis")
+  Container(orchestrator, "Orquestração batch", "Tecnologia não especificada", "Coordena execução diária e estados")
+  Container(training, "Treinamento/retreinamento", "Tecnologia não especificada", "Produz candidato somente da seleção")
+  Container(validation, "Validação e promoção", "Tecnologia não especificada", "Avalia candidato e controla publicação")
+  Container(registry, "Registro de modelos", "Tecnologia não especificada", "Guarda versões, métricas e estados")
+  Container(observability, "Observabilidade", "Tecnologia não especificada", "Registra eventos, métricas e alertas")
+}
+System_Ext(source, "Origem de dados", "Não especificada")
+System_Ext(schedule, "Cron diário", "Ao final do dia")
+
+Rel(actor, web, "Solicita uso online")
+Rel(source, ingest, "Envia/expõe dados")
+Rel(schedule, orchestrator, "Dispara diariamente")
+Rel(orchestrator, ingest, "Solicita dados novos")
+Rel(orchestrator, training, "Inicia execução com seleção")
+Rel(training, validation, "Entrega candidato e métricas")
+Rel(validation, registry, "Registra/promove versão")
+Rel(registry, web, "Fornece modelo ativo")
+Rel(orchestrator, observability, "Emite eventos")
+Rel(training, observability, "Emite métricas")
+Rel(validation, observability, "Emite resultado")
+```
+
+### 11.3 Componentes do batch
+
+```mermaid
+C4Component
+title Componentes conceituais — orquestração batch
+
+Container_Boundary(batch, "Orquestração batch") {
+  Component(trigger, "Disparador", "Cron/job", "Recebe o disparo diário")
+  Component(lock, "Coordenador de exclusividade", "Mecanismo não especificado", "Evita execuções concorrentes")
+  Component(checkpoint, "Checkpoint/watermark", "Persistência não especificada", "Lê e confirma progresso")
+  Component(selector, "Seletor incremental", "Componente lógico", "Materializa somente dados novos")
+  Component(quality, "Validador de dados", "Componente lógico", "Verifica qualidade e elegibilidade")
+  Component(trainer, "Executor de treino", "Componente lógico", "Produz candidato reproduzível")
+  Component(modelValidation, "Validador de modelo", "Componente lógico", "Compara candidato e baseline")
+  Component(promoter, "Promotor/rollback", "Componente lógico", "Atualiza ou restaura versão ativa")
+  Component(audit, "Linhagem e observabilidade", "Componente lógico", "Correlaciona execução, dados e modelo")
+}
+System_Ext(data, "Origem de dados", "Não especificada")
+System_Ext(registry, "Registro de modelos", "Não especificado")
+
+Rel(trigger, lock, "Solicita execução")
+Rel(lock, checkpoint, "Lê estado")
+Rel(checkpoint, selector, "Fornece watermark")
+Rel(data, selector, "Consulta dados")
+Rel(selector, quality, "Entrega seleção")
+Rel(quality, trainer, "Autoriza dados válidos")
+Rel(trainer, modelValidation, "Entrega candidato")
+Rel(modelValidation, promoter, "Entrega decisão")
+Rel(promoter, registry, "Registra/promove/restaura")
+Rel(selector, audit, "Registra seleção")
+Rel(trainer, audit, "Registra parâmetros e saída")
+Rel(modelValidation, audit, "Registra métricas e decisão")
+Rel(promoter, checkpoint, "Confirma avanço após commit")
+```
+
+## 12. Sequências
+
+### 12.1 Fluxo online
+
+```mermaid
+sequenceDiagram
+autonumber
+participant U as Consumidor/ator (não especificado)
+participant A as Aplicação online
+participant R as Registro/modelo ativo (não especificado)
+
+U->>A: Solicitação online
+A->>R: Obter versão ativa ou referência
+R-->>A: Modelo ativo e metadados
+A->>A: Validar entrada e executar inferência
+A-->>U: Resposta ou erro explícito
+```
+
+Esse fluxo é apenas uma separação de responsabilidades. Não há requisito que
+defina inferência, latência, formato de entrada/saída ou comportamento do modelo
+ativo; todos permanecem perguntas abertas.
+
+### 12.2 Fluxo batch diário incremental
+
+```mermaid
+sequenceDiagram
+autonumber
+participant C as Cron diário
+participant O as Orquestrador batch
+participant L as Lock/lease
+participant W as Checkpoint/watermark
+participant S as Seletor de dados novos
+participant Q as Qualidade de dados
+participant T as Treinamento
+participant V as Validação do modelo
+participant G as Registry/promoção
+participant M as Observabilidade/linhagem
+
+C->>O: Disparo ao final do dia
+O->>L: Adquirir exclusividade
+alt Lock não adquirido
+  L-->>O: Execução já em andamento
+  O->>M: Registrar skip/conflito
+else Lock adquirido
+  O->>W: Ler watermark committed
+  W-->>O: w_prev
+  O->>S: Selecionar dados após w_prev
+  S-->>O: Seleção imutável + w_candidate
+  O->>M: Registrar IDs, período, checksum e contagem
+  alt Sem dados novos
+    O->>M: Registrar no-op
+    O->>L: Liberar lock
+  else Há dados novos
+    O->>Q: Validar seleção
+    alt Dados inválidos
+      Q-->>O: Falha de qualidade
+      O->>M: Registrar falha sem avançar watermark
+      O->>L: Liberar lock
+    else Dados válidos
+      Q-->>O: Seleção aprovada
+      O->>T: Treinar/retreinar com seleção e configuração versionadas
+      T-->>O: Candidato + linhagem
+      O->>V: Validar candidato contra baseline/política
+      alt Candidato reprovado
+        V-->>O: Rejeição
+        O->>M: Registrar métricas e rejeição
+        O->>L: Liberar lock
+      else Candidato aprovado
+        V-->>O: Aprovação
+        O->>G: Registrar e promover candidato
+        G-->>O: Promoção commitada
+        O->>W: Commitar w_candidate atomically
+        O->>M: Registrar sucesso, custo e versão ativa
+        O->>L: Liberar lock
+      end
+    end
+  end
+end
+```
+
+O ponto de commit mostrado é uma proposta: se o registro do modelo e o avanço do
+watermark não puderem ser atômicos, a recuperação deve usar um estado de execução
+durável e operações idempotentes para evitar perda ou duplicação silenciosa.
+
+## 13. Análise de operação e ML
+
+### 13.1 Watermark/checkpoint
+
+**Decisão proposta D-001 (sem requisito completo):** manter um checkpoint durável por
+fonte/partição, com `w_prev`, `w_candidate`, identificador da execução e estado
+(`started`, `validated`, `published`, `committed`, `failed`). A seleção deve ser
+materializada antes do treinamento.
+
+- **Justificativa:** RA-001 exige somente dados novos; R-001 exige evitar
+  inconsistência e preservar rastreabilidade.
+- **Alternativa:** usar apenas timestamp de leitura. É mais simples, mas perde
+  eventos fora de ordem e torna reprocessamento ambíguo.
+- **Pergunta:** o dado possui offset monotônico, timestamp confiável ou identificador
+  de versão? A janela de atraso permitida não foi definida.
+
+### 13.2 Idempotência, lock e concorrência
+
+**Decisão proposta D-002 (sem requisito explícito):** gerar uma chave idempotente por
+fonte + intervalo/offset + política de seleção; adquirir lock com expiração
+controlada; rejeitar ou registrar uma segunda execução enquanto a primeira estiver
+ativa. O lock não deve ser a única fonte de verdade do estado.
+
+- **Justificativa:** o cron é diário e não há regra de concorrência; duplicidade
+  pode quebrar RA-001.
+- **Alternativas:** lock exclusivo simples (menor complexidade, recuperação mais
+  arriscada) ou lease renovável (melhor para falhas, requer relógio/timeout
+  definidos).
+- **Perguntas:** pode haver execução manual? Há múltiplas fontes/partições? Qual
+  autoridade cancela ou recupera um lock expirado?
+
+### 13.3 Retry e recuperação
+
+**Decisão proposta D-003 (sem SLA):** separar falhas transitórias de falhas de
+  dados/modelo; permitir retry limitado e idempotente para as primeiras; manter
+  checkpoint anterior em falha; permitir retomada por estado da execução ou
+  reprocessamento explícito.
+
+- **Justificativa:** R-002 identifica ausência de política de falha e recuperação.
+- **Alternativa:** retry ilimitado, rejeitada provisoriamente por poder sobrepor o
+  próximo ciclo e elevar custos.
+- **Perguntas:** número máximo de tentativas, backoff, janela de recuperação, alerta
+  e responsável operacional não foram definidos.
+
+### 13.4 Qualidade de dados e linhagem
+
+**Decisão proposta D-004 (sem critérios):** bloquear treinamento quando validações
+obrigatórias falharem; registrar esquema, contagem, período, IDs/partições,
+checksum, perfil de qualidade, transformação, código e configuração.
+
+- **Justificativa:** RA-001 limita os dados; R-001 e R-004 exigem rastreabilidade
+  para explicar o modelo produzido.
+- **Alternativa:** permitir treino com dados incompletos e somente alertar. É mais
+  disponível, mas não garante que “somente dados novos” sejam dados válidos.
+- **Perguntas:** quais regras de completude, duplicidade, distribuição, privacidade
+  e representatividade são obrigatórias?
+
+### 13.5 Reprodutibilidade
+
+**Decisão proposta D-005 (atributo não confirmado):** registrar versão do código,
+configuração, dependências, ambiente, seleção, sementes quando aplicável, métricas e
+checksums dos artefatos.
+
+- **Justificativa:** R-001 e R-004 tornam necessário explicar a origem do candidato
+  e repetir uma execução.
+- **Alternativa:** guardar apenas o modelo final. Reduz custo inicial, mas impede
+  auditoria e recuperação confiável.
+- **Pergunta:** qual nível de reprodução é exigido: bit a bit, mesma métrica ou apenas
+  rastreabilidade operacional?
+
+### 13.6 Validação, registry, promoção e rollback
+
+**Decisão proposta D-006 (sem limiares de requisito):** validar o candidato contra
+um baseline vigente e uma política versionada; registrar candidato antes da
+promoção; promover de forma reversível; manter a versão anterior para rollback.
+
+- **Justificativa:** R-004 exige compatibilidade com modelos/processos futuros e o
+  risco R-004 aponta a necessidade de ciclo de vida; os limiares ainda são lacuna.
+- **Alternativas:** promoção automática (menor intervenção, maior risco) ou promoção
+  manual (maior controle, maior atraso). Nenhuma pode ser escolhida sem
+  stakeholder e critérios.
+- **Perguntas:** quais métricas, conjuntos de avaliação, aprovação humana,
+  compatibilidade, período de observação e gatilhos de rollback se aplicam?
+
+### 13.7 Observabilidade
+
+**Decisão proposta D-007 (atributo não confirmado):** correlacionar cron, execução,
+seleção, treino, validação, modelo e checkpoint; emitir estados explícitos de
+sucesso, no-op, retry, falha, rejeição e rollback; não registrar dados pessoais
+brutos por padrão.
+
+- **Justificativa:** R-002 requer tornar falhas recuperáveis; rastreabilidade é uma
+  implicação identificada na seção 4.
+- **Alternativa:** logs livres sem correlação. É mais simples, mas dificulta auditoria
+  e diagnóstico.
+- **Perguntas:** quais métricas, retenção, alertas, dashboards e responsáveis são
+  necessários?
+
+### 13.8 Segurança, LGPD e acesso
+
+**Fato:** nenhuma política de segurança, classificação de dados, base legal,
+retenção ou requisito LGPD foi localizada.
+
+**Salvaguardas propostas D-008 (sem requisito confirmado):**
+
+- minimizar dados pessoais na seleção e nos logs;
+- separar permissões de leitura de dados, execução, promoção e rollback;
+- proteger dados, checkpoints, modelos e métricas em trânsito e repouso;
+- manter trilha de auditoria de acessos e decisões;
+- definir retenção e eliminação conforme finalidade e orientação jurídica;
+- tratar datasets, features, modelos e logs como ativos com classificação definida.
+
+Essas salvaguardas não determinam uma tecnologia nem substituem a definição do
+controlador, operador, finalidade, base legal, titulares, direitos ou prazos.
+
+### 13.9 Custos
+
+**Decisão proposta D-009 (sem volumes/custos documentados):** medir custo por
+execução, armazenamento de seleções/artefatos, retries e tempo de recursos; evitar
+reprocessar dados já committed; aplicar retenção somente após definição de auditoria
+e LGPD.
+
+- **Justificativa:** o processamento é diário e pode acumular artefatos; o custo é
+  uma consequência operacional a controlar, não um requisito quantificado.
+- **Alternativas:** reter tudo (melhor auditoria, maior custo), reter apenas ativos
+  (menor custo, pior investigação) ou política híbrida. A escolha depende de
+  requisitos de retenção e auditoria ausentes.
+- **Perguntas:** há orçamento, limite de duração, limite de armazenamento,
+  sazonalidade, necessidade de reprocessamento histórico ou restrição de
+  infraestrutura?
+
+## 14. Decisões e pendências
+
+| ID | Decisão/pendência | Classificação | Origem ou justificativa | Requer confirmação de |
+|---|---|---|---|---|
+| D-001 | Checkpoint durável e seleção materializada | Proposta arquitetural | RA-001, R-001 | Dono dos dados/operação |
+| D-002 | Idempotência por execução e lock/lease | Proposta arquitetural | Cron diário; risco de concorrência | Operação |
+| D-003 | Retry limitado e sem avanço de checkpoint em falha | Proposta arquitetural | R-002 | Operação |
+| D-004 | Bloqueio por falha de qualidade e linhagem completa | Proposta arquitetural | RA-001, R-001, R-004 | Dono do produto/dados |
+| D-005 | Registro de insumos para reprodução | Decisão sem requisito confirmado | R-001, R-004 | Auditoria/dados |
+| D-006 | Registry, baseline, promoção reversível e rollback | Proposta arquitetural | R-004 | Dono do modelo/operação |
+| D-007 | Observabilidade correlacionada e estados explícitos | Decisão sem requisito confirmado | R-002 e atributos a esclarecer | Operação |
+| D-008 | Salvaguardas LGPD e segregação de acesso | Decisão sem requisito confirmado | Ausência de política; risco potencial | Jurídico/segurança |
+| D-009 | Medição e retenção orientadas a custo | Decisão sem requisito confirmado | Execução diária; volumes ausentes | Finanças/operação |
+
+Até que as confirmações sejam obtidas, as propostas desta seção devem ser tratadas
+como alternativas de arquitetura e não como requisitos ou decisões irrevogáveis.
