@@ -824,3 +824,241 @@ responsáveis. Antes de transformar A1–A9 em decisões, devem ser confirmados 
 temas de risco e os valores das métricas hipotéticas. A avaliação não altera
 `DOC-001`, `DOC-002`, `USR-001`, RA-001, RA-002 nem os riscos anteriores; apenas
 adiciona análise independente e rastreável.
+
+## 20. Painel revisor independente
+
+O painel abaixo revisa a arquitetura sem promover lacunas a requisitos. As objeções
+representam divergências entre perspectivas; não são decisões aprovadas.
+
+### 20.1 Arquiteto de solução
+
+- **Objeção:** os diagramas C4 apresentam ingestão, registry e observabilidade como
+  contêineres internos, mas a seção de limites declara que suas tecnologias,
+  implantação e até o escopo de validação/publicação não estão confirmados.
+- **Fundamento:** RA-002 só confirma uma aplicação em `Site/`; RA-001 confirma o
+  cron diário. A fronteira apresentada é útil como modelo lógico, mas pode induzir
+  uma decomposição física não autorizada.
+- **Divergência:** manter o C4 lógico favorece discussão de responsabilidades; reduzir
+  o C4 a aplicação + job seria mais fiel à evidência, porém perderia os pontos de
+  controle necessários para avaliar o batch.
+- **Condição:** manter a legenda “conceitual” e validar a fronteira quando contratos
+  e ownership forem definidos.
+
+### 20.2 Dados/ML
+
+- **Objeção:** “somente dados novos” não garante um treino incremental correto se não
+  houver semântica de evento atrasado, correção retroativa, deduplicação e política
+  de dados de referência.
+- **Fundamento:** R-001 e PS-01 identificam a ambiguidade do watermark; S-02 exige
+  distinguir registros novos, atrasados e duplicados.
+- **Divergência:** checkpoint por offset/partição é mais seguro contra perda quando a
+  fonte oferece offset monotônico; timestamp é mais portável, mas pode perder ou
+  repetir dados. Não há evidência para escolher.
+- **Condição:** executar experimento com dados representativos e confirmar a fonte de
+  verdade antes de fechar D-001.
+
+### 20.3 Segurança/LGPD
+
+- **Objeção:** D-008 é apenas uma salvaguarda proposta; não há classificação,
+  finalidade, base legal, controlador, retenção ou matriz de acesso. “Não registrar
+  dados pessoais brutos” não elimina vazamento por features, artefatos ou modelo.
+- **Fundamento:** a própria seção 13.8 registra ausência de política; S-09 e ATAM-R-07
+  tratam o risco sem métrica confirmada.
+- **Divergência:** mascarar dados em logs pode preservar diagnóstico, mas pode
+  destruir evidência de incidente; retenção ampla ajuda auditoria, mas aumenta
+  exposição e custo.
+- **Condição:** obter avaliação jurídica e classificação de dados antes de promoção
+  para produção.
+
+### 20.4 Operações/SRE
+
+- **Objeção:** retry limitado, lease e estados explícitos não constituem uma política
+  operacional sem owner, janela, alertas, runbook e tratamento de dependências
+  indisponíveis.
+- **Fundamento:** R-002, S-03, S-04 e S-08 deixam retry, timeout, recuperação e
+  disponibilidade como perguntas abertas.
+- **Divergência:** no-op quando não há dados reduz custo e ruído; pode ocultar atraso
+  de ingestão se não houver métrica de frescor. Retry automático melhora recuperação;
+  pode sobrepor o próximo ciclo e elevar custo.
+- **Condição:** teste de falhas e definição de estados terminais antes de declarar
+  confiabilidade operacional.
+
+### 20.5 Custos
+
+- **Objeção:** seleção materializada, linhagem completa, registry e retenção ampla
+  têm custo potencial, mas não há volume, orçamento, frequência de reprocessamento
+  ou política de retenção para comparar alternativas.
+- **Fundamento:** D-009, PS-05, T-01 e T-05 explicitam o trade-off sem valores.
+- **Divergência:** guardar toda a seleção favorece reprodutibilidade; guardar apenas
+  referência/checksum reduz custo, mas pode impedir auditoria se a fonte mudar.
+- **Condição:** medir custo de uma execução representativa e definir retenção com
+  jurídico, operação e dados.
+
+### 20.6 Facilitador ATAM
+
+- **Objeção:** a utility tree prioriza confiabilidade, integridade e segurança por
+  julgamento arquitetural, não por priorização de stakeholders.
+- **Fundamento:** não há personas, requisitos funcionais, atributos quantificados ou
+  SLAs documentados.
+- **Divergência:** a priorização é necessária para revelar pontos de sensibilidade,
+  mas deve ser tratada como hipótese até validação.
+- **Condição:** revisar importância/dificuldade com stakeholders identificados e
+  registrar a origem de cada prioridade.
+
+## 21. Verificação de coerência
+
+| Relação verificada | Resultado | Observação |
+|---|---|---|
+| C4 ↔ sequência batch | Parcialmente coerente | Os participantes da sequência correspondem aos contêineres/componentes lógicos; lock, watermark e qualidade aparecem detalhados na sequência e não como contêineres separados, corretamente tratados como responsabilidades internas. |
+| C4 ↔ sequência online | Coerente com ressalva | A aplicação usa um modelo ativo, mas a existência do fluxo de inferência e seu contrato ainda não é requisito confirmado. |
+| Pipeline ↔ utility tree | Coerente | Seleção/checkpoint cobrem S-01/S-02; lock/retry cobrem S-03/S-04; qualidade/validação cobrem S-05/S-06; registry/rollback cobrem S-07; observabilidade cobre S-08; D-008 cobre S-09. |
+| Utility tree ↔ riscos | Coerente | Os cenários prioritários estão vinculados a R-001–R-004 e ATAM-R-01–ATAM-R-07. |
+| Sequência ↔ commit | Lacuna controlada | A sequência mostra promoção antes do commit do watermark, mas não define atomicidade entre registry e checkpoint; PS-02/ATAM-R-02 permanecem em aberto. |
+| C4 ↔ ownership | Incompleto | Personas, responsáveis e sistemas externos não foram identificados; os nomes são papéis conceituais. |
+
+## 22. ADRs
+
+### ADR-001 — Checkpoint e seleção materializada
+
+- **Contexto:** RA-001 exige treino diário apenas com dados novos; R-001 aponta risco
+  de seleção inconsistente.
+- **Forças:** torna a seleção auditável, permite reprocessamento e separa elegibilidade
+  de treino.
+- **Alternativas:** timestamp simples; offset/partição; seleção materializada com
+  watermark por fonte/partição.
+- **Decisão:** adotar **provisoriamente** watermark por fonte/partição e seleção
+  materializada; o tipo de watermark e a janela de atraso ficam pendentes.
+- **Consequências:** aumenta rastreabilidade e armazenamento; exige política para
+  atrasos, duplicidade e correções retroativas.
+- **Riscos:** perda/duplicação se o watermark não refletir a semântica da fonte
+  (ATAM-R-01, S-02).
+- **Requisitos:** RA-001, R-001; tipo de watermark ainda sem requisito.
+
+### ADR-002 — Exclusividade e idempotência do batch
+
+- **Contexto:** o cron diário pode ser repetido, sobreposto ou recuperado após falha.
+- **Forças:** evita commits concorrentes e reduz efeitos duplicados.
+- **Alternativas:** nenhuma exclusividade; lock simples; lease renovável com chave
+  idempotente por seleção/execução.
+- **Decisão:** adotar **provisoriamente** lease/lock com chave idempotente e estado
+  durável; timeout, renovação e autoridade de recuperação ficam pendentes.
+- **Consequências:** exige coordenação e tratamento de lease expirado; reduz
+  paralelismo na mesma fonte/partição.
+- **Riscos:** lock preso ou expirado pode bloquear ou duplicar execução
+  (ATAM-R-03, S-03, S-04).
+- **Requisitos:** RA-001 e R-002 justificam a proteção; nenhum requisito define
+  mecanismo ou parâmetros.
+
+### ADR-003 — Gates de qualidade, modelo e promoção
+
+- **Contexto:** dados degradados e candidato pior podem produzir modelo inválido;
+  R-004 exige preservar compatibilidade futura.
+- **Forças:** bloqueia entrada inválida, compara com baseline, mantém histórico e
+  permite rollback.
+- **Alternativas:** alertar sem bloquear; promoção automática; promoção manual;
+  registry sem versão anterior.
+- **Decisão:** adotar **provisoriamente** gates versionados, registry de candidato e
+  ativo, promoção reversível e preservação do modelo anterior; métricas, limiares e
+  aprovação não estão decididos.
+- **Consequências:** mais controle e custo operacional; atualização pode ser atrasada.
+- **Riscos:** critério ausente ou inadequado permite regressão ou bloqueia evolução
+  (ATAM-R-04, ATAM-R-05, S-05, S-06, S-07).
+- **Requisitos:** R-004 e atributos de qualidade a esclarecer; os gates não são
+  requisitos confirmados.
+
+### ADR-004 — Observabilidade, segurança e custo como controles transversais
+
+- **Contexto:** falhas, vazamentos e custos não possuem política documentada.
+- **Forças:** correlação de execução, linhagem e modelo; minimização e segregação;
+  medição para decisão de retenção.
+- **Alternativas:** logs livres; retenção ampla; retenção mínima; proteção somente
+  no perímetro.
+- **Decisão:** adotar **provisoriamente** eventos correlacionados, estados explícitos,
+  minimização, segregação de acesso e medição de custo; retenção, classificação,
+  base legal e metas ficam pendentes.
+- **Consequências:** melhora diagnóstico e controle, mas exige governança, armazenamento
+  e possível revisão jurídica.
+- **Riscos:** dados pessoais em logs/artefatos e custo não controlado
+  (ATAM-R-07, S-08, S-09).
+- **Requisitos:** R-002 e implicações de segurança/observabilidade/custo; não há
+  requisito LGPD ou orçamento confirmado.
+
+## 23. Matriz de rastreabilidade
+
+| Requisito/driver | Decisão | Componente/responsabilidade | Evidência |
+|---|---|---|---|
+| RA-001 — treino diário só com dados novos | ADR-001, ADR-002; D-001, D-002 | Cron, orquestração, seletor, checkpoint, treinamento | S-01, S-02, S-04; C4 batch; sequência batch |
+| RA-001 — execução ao final do dia | D-003, D-007 | Disparador, orquestrador, observabilidade | S-01, S-03, S-08; `USR-001` |
+| RA-002 — aplicação existente em `Site/` | ADR-003; separação online/batch | Aplicação online, registry/modelo ativo | C4 contexto/contêiner; [Site/README.md](../Site/README.md) |
+| R-001 — seleção inconsistente de dados novos | ADR-001, ADR-002 | Seletor, checkpoint, lock, linhagem | S-02, S-04, S-05; ATAM-R-01, ATAM-R-03 |
+| R-002 — falha do job sem recuperação definida | ADR-002, ADR-004; D-003, D-007 | Orquestrador, lock, retry, observabilidade | S-01, S-03, S-08; ATAM-R-02, ATAM-R-06 |
+| R-003 — arquitetura pode não atender ao produto | Nenhuma ainda | Todas as fronteiras | Personas e escopo ausentes; S-01–S-09 são hipóteses |
+| R-004 — compatibilidade entre aplicação e modelo | ADR-003; D-006 | Validação, registry, promoção, rollback, aplicação | S-06, S-07; ATAM-R-05 |
+
+### Requisitos sem cobertura
+
+- Funcionalidades e fluxos de negócio.
+- Personas, stakeholders, permissões e jornadas.
+- Contratos online e batch.
+- Definição operacional de “dados novos”, atraso e correção retroativa.
+- Critérios, métricas e limiares de qualidade de dados/modelo.
+- SLA, horário/fuso, janela de execução e disponibilidade.
+- Política de segurança/LGPD, base legal, retenção e resposta a incidentes.
+- Orçamento, volumes, custos máximos e política de reprocessamento.
+
+### Decisões sem requisito confirmado
+
+D-002 (mecanismo de lock/lease), D-004 (bloqueio de qualidade), D-005
+(reprodutibilidade), D-006 (registry/promoção/rollback), D-007 (observabilidade),
+D-008 (salvaguardas LGPD), D-009 (medição/retenção), além da decomposição lógica
+dos C4 e da separação online/batch. Todas permanecem propostas.
+
+### Suposições
+
+- `Site/` é parte do sistema em análise.
+- A aplicação online usará um modelo ativo, embora a inferência não esteja
+  especificada.
+- A execução deve ser serializada por fonte/partição.
+- Uma seleção deve ser imutável durante uma execução.
+- Um modelo anterior deve ser preservado para rollback.
+
+As quatro últimas são hipóteses de desenho, não fatos ou requisitos.
+
+### Perguntas em aberto
+
+1. Qual é a fonte de dados e qual campo define novidade de forma monotônica?
+2. Como tratar dados atrasados, correções retroativas e duplicidade?
+3. Qual é o horário/fuso e qual é a janela aceitável do cron diário?
+4. Execuções manuais são permitidas? Quem recupera ou cancela um lease?
+5. Quais gates de dados/modelo, métricas, baseline e limiares serão aprovados?
+6. Promoção é automática, manual ou híbrida? Qual é o gatilho de rollback?
+7. Qual comportamento online é aprovado durante indisponibilidade do registry?
+8. Quais dados pessoais existem, qual a finalidade, base legal e retenção?
+9. Quem são os owners de dados, modelos, operação, segurança e custo?
+10. Qual orçamento, volume e política de retenção devem orientar D-009?
+
+### Riscos aceitos provisoriamente
+
+Não há aceite formal de risco documentado. Para fins de revisão, somente os
+seguintes riscos são tolerados como pendências temporárias, condicionados a não
+promover a solução para produção:
+
+- ausência de limiares quantitativos;
+- ausência de tecnologia definida para lock, registry e observabilidade;
+- C4 lógico sem mapeamento de implantação;
+- prioridade ATAM baseada em julgamento técnico, sem validação de stakeholders.
+
+ATAM-R-01 a ATAM-R-07 não estão aceitos para produção; permanecem abertos.
+
+### Próximos experimentos
+
+| Experimento | Hipótese | Evidência esperada | Cenários |
+|---|---|---|---|
+| E-01 — Replay incremental | O watermark escolhido seleciona cada registro elegível uma vez, incluindo comportamento atrasado definido | Dataset sintético/representativo, reconciliação de IDs e casos de duplicidade/atraso | S-02, S-03, S-05 |
+| E-02 — Falhas e concorrência | Lock/lease e idempotência impedem commits/promoções duplicados e permitem recuperação | Injeção de falhas em cada etapa, duas execuções sobrepostas e histórico de estados | S-03, S-04, S-08 |
+| E-03 — Gate de candidato | Baseline e política rejeitam candidato pior e permitem rollback consistente | Execuções com candidato melhor/pior, registry versionado e troca auditável | S-06, S-07 |
+| E-04 — Segurança e LGPD | Logs/artefatos minimizados não expõem dados fora da autorização | Classificação, testes de acesso, inspeção de logs/artefatos e decisão jurídica | S-09 |
+| E-05 — Custo de retenção | Seleção/linhagem/registry cabem na política econômica aprovada | Medição de armazenamento, retries, tempo de processamento e reprocessamento | S-03, S-05, S-08 |
+
+Nenhum experimento deve ser interpretado como validação de requisito ausente; seus
+resultados devem alimentar a elicitação e a revisão dos ADRs.
