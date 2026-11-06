@@ -543,3 +543,284 @@ e LGPD.
 
 Até que as confirmações sejam obtidas, as propostas desta seção devem ser tratadas
 como alternativas de arquitetura e não como requisitos ou decisões irrevogáveis.
+
+## 15. Avaliação ATAM independente
+
+### 15.1 Escopo e método
+
+Esta avaliação aplica ATAM aos drivers e às abordagens registradas neste documento.
+Não há personas confirmadas, requisitos funcionais completos, atributos de qualidade
+quantificados ou SLAs. Portanto, a classificação de importância e dificuldade é uma
+priorização analítica provisória, e todas as métricas abaixo são **hipóteses
+pendentes**, não metas ou fatos.
+
+Abordagens avaliadas:
+
+- **A1 — checkpoint + seleção materializada:** D-001.
+- **A2 — idempotência + lock/lease:** D-002.
+- **A3 — retry limitado + recuperação por estado:** D-003.
+- **A4 — bloqueio por qualidade + linhagem:** D-004.
+- **A5 — reprodução por insumos versionados:** D-005.
+- **A6 — validação, registry, promoção reversível e rollback:** D-006.
+- **A7 — observabilidade correlacionada:** D-007.
+- **A8 — segregação, minimização e proteção de dados:** D-008.
+- **A9 — medição de custo e retenção condicionada:** D-009.
+
+### 15.2 Utility tree
+
+```text
+Utilidade do sistema
+├── Confiabilidade do batch diário [RA-001, R-002]
+│   ├── Execução diária concluída ou explicitamente encerrada [S-01 | I alta, D média]
+│   ├── Falha parcial recuperável sem perda/duplicação silenciosa [S-03 | I alta, D alta]
+│   └── Jobs sobrepostos não produzem commits concorrentes [S-04 | I alta, D média]
+├── Integridade incremental e dados [RA-001, R-001]
+│   ├── Somente dados novos são selecionados [S-02 | I alta, D alta]
+│   └── Degradação de dados bloqueia ou sinaliza decisão explícita [S-05 | I alta, D alta]
+├── Qualidade e governança do modelo [R-004, atributos a esclarecer]
+│   ├── Candidato pior não é promovido [S-06 | I alta, D alta]
+│   └── Rollback restaura versão conhecida [S-07 | I alta, D média]
+├── Disponibilidade e continuidade [R-002, atributos a esclarecer]
+│   └── Indisponibilidade não publica estado falso [S-08 | I média, D alta]
+└── Segurança e privacidade [lacuna explícita, D-008]
+    └── Vazamento de dados pessoais é evitado/detectado [S-09 | I alta, D alta]
+```
+
+`I` significa importância relativa para a utilidade; `D` significa dificuldade
+relativa de realizar e validar a abordagem. Ambos são julgamentos provisórios, pois
+não há stakeholders ou prioridades de negócio documentados.
+
+### 15.3 Cenários priorizados
+
+Formato obrigatório: **fonte; estímulo; ambiente; artefato; resposta; métrica**.
+Os valores de métrica são hipóteses a confirmar; onde não há base para propor valor,
+o cenário registra “a definir”.
+
+#### S-01 — Execução diária
+
+- **Prioridade:** I alta, D média.
+- **Fonte:** cron job diário (`USR-001`).
+- **Estímulo:** chega o disparo ao final do dia.
+- **Ambiente:** operação normal, sem execução concorrente conhecida.
+- **Artefato:** orquestrador batch, checkpoint, seleção incremental e observabilidade.
+- **Resposta:** iniciar uma execução identificada; selecionar dados novos; concluir
+  com sucesso, no-op, rejeição ou falha explícita; somente uma execução aprovada
+  pode avançar o checkpoint.
+- **Métrica (hipótese):** propor taxa de execuções com estado terminal explícito e
+  ausência de avanço indevido; horário-limite e percentual aceitável ainda estão
+  a definir.
+- **Abordagens:** A1, A3, A7.
+- **Vínculos:** RA-001, D-001, D-003, D-007, R-002.
+
+#### S-02 — Dados novos
+
+- **Prioridade:** I alta, D alta.
+- **Fonte:** origem de dados não identificada.
+- **Estímulo:** existem registros posteriores ao checkpoint anterior, inclusive
+  registros potencialmente atrasados ou duplicados.
+- **Ambiente:** execução batch elegível.
+- **Artefato:** seletor incremental, checkpoint e seleção materializada.
+- **Resposta:** produzir uma seleção auditável segundo a definição aprovada de
+  novidade; excluir registros já committed; preservar candidatos fora da janela
+  para política posterior, sem incorporá-los silenciosamente.
+- **Métrica (hipótese):** propor contagem de IDs selecionados, excluídos e
+  duplicados reconciliada com a fonte; tolerância e janela de atraso estão a definir.
+- **Abordagens:** A1, A4, A5.
+- **Vínculos:** RA-001, D-001, D-004, D-005, R-001.
+
+#### S-03 — Falha parcial
+
+- **Prioridade:** I alta, D alta.
+- **Fonte:** serviço de dados, treinamento, registry ou observabilidade falha no
+  meio da execução.
+- **Estímulo:** uma etapa termina parcialmente e o processo é interrompido.
+- **Ambiente:** execução com seleção registrada e checkpoint anterior committed.
+- **Artefato:** estado da execução, lock, artefatos temporários e checkpoint.
+- **Resposta:** marcar falha; não avançar o checkpoint sem commit definido; liberar ou
+  recuperar exclusividade; permitir retry/retomada idempotente sem publicar sucesso
+  falso.
+- **Métrica (hipótese):** propor zero commits incompletos e reconciliação de cada
+  execução interrompida; limite de recuperação e número de retries estão a definir.
+- **Abordagens:** A2, A3, A5, A7.
+- **Vínculos:** R-002, D-002, D-003, D-005, D-007.
+
+#### S-04 — Jobs sobrepostos
+
+- **Prioridade:** I alta, D média.
+- **Fonte:** cron, operador ou mecanismo de retry dispara duas execuções.
+- **Estímulo:** segunda execução tenta processar a mesma fonte/partição enquanto a
+  primeira mantém estado ativo.
+- **Ambiente:** concorrência real ou lock expirado.
+- **Artefato:** lock/lease, chave idempotente, checkpoint e registry.
+- **Resposta:** uma execução obtém exclusividade; a outra é rejeitada ou registrada
+  como skip; não há promoção ou avanço de checkpoint concorrente.
+- **Métrica (hipótese):** propor no máximo um commit por chave de seleção e zero
+  promoções concorrentes; timeout/lease ainda estão a definir.
+- **Abordagens:** A2, A7.
+- **Vínculos:** D-002, D-007, R-001, R-002.
+
+#### S-05 — Degradação dos dados
+
+- **Prioridade:** I alta, D alta.
+- **Fonte:** validação de dados.
+- **Estímulo:** seleção contém qualidade inferior à política, esquema incompatível,
+  duplicidade ou distribuição alterada.
+- **Ambiente:** antes do treinamento, com seleção materializada.
+- **Artefato:** validador de dados, execução, linhagem e checkpoint.
+- **Resposta:** bloquear ou encaminhar para decisão explícita; registrar evidências;
+  não incorporar dados degradados como se fossem válidos e não avançar o checkpoint
+  de forma silenciosa.
+- **Métrica (hipótese):** propor cobertura das regras de qualidade e proporção de
+  seleções com decisão registrada; regras, limiares e tolerâncias estão a definir.
+- **Abordagens:** A4, A7, A9.
+- **Vínculos:** D-004, D-007, D-009, R-001, R-002.
+
+#### S-06 — Candidato pior
+
+- **Prioridade:** I alta, D alta.
+- **Fonte:** validador de modelo.
+- **Estímulo:** candidato apresenta métricas ou compatibilidade piores que o
+  baseline, conforme política ainda não definida.
+- **Ambiente:** candidato treinado com dados considerados elegíveis.
+- **Artefato:** validação, registry, promoção e modelo ativo.
+- **Resposta:** rejeitar promoção; registrar candidato e métricas; manter modelo
+  ativo; deixar o checkpoint conforme a política aprovada, sem mascarar a rejeição.
+- **Métrica (hipótese):** propor zero promoções de candidatos que não atendam aos
+  critérios versionados; métricas, baseline e limiares estão a definir.
+- **Abordagens:** A5, A6, A7.
+- **Vínculos:** D-005, D-006, D-007, R-004.
+
+#### S-07 — Rollback
+
+- **Prioridade:** I alta, D média.
+- **Fonte:** operador, regra de detecção ou incidente de modelo ainda não definido.
+- **Estímulo:** versão ativa precisa ser retirada após promoção.
+- **Ambiente:** modelo anterior registrado e elegível para restauração.
+- **Artefato:** registry, aplicação online e observabilidade.
+- **Resposta:** apontar para uma versão anterior conhecida; registrar motivo, ator,
+  tempo e versão; impedir que o batch em andamento substitua o rollback sem uma
+  nova decisão válida.
+- **Métrica (hipótese):** propor rastreabilidade completa da troca e consistência
+  da versão ativa após rollback; tempo-alvo e critério de sucesso estão a definir.
+- **Abordagens:** A6, A7, A8.
+- **Vínculos:** D-006, D-007, D-008, R-004.
+
+#### S-08 — Indisponibilidade
+
+- **Prioridade:** I média, D alta.
+- **Fonte:** origem de dados, registry, aplicação ou infraestrutura fica indisponível.
+- **Estímulo:** uma dependência necessária não responde durante o ciclo online ou
+  batch.
+- **Ambiente:** falha transitória ou prolongada; SLA não especificado.
+- **Artefato:** aplicação online ou etapa batch dependente.
+- **Resposta:** online deve retornar erro explícito ou comportamento degradado
+  aprovado; batch deve registrar falha/no-op, conservar estado consistente e usar
+  retry/recuperação sem duplicação; não deve declarar sucesso sem evidência.
+- **Métrica (hipótese):** propor disponibilidade, tempo de detecção, tempo de
+  recuperação e percentual de execuções recuperadas; todos os valores estão a definir.
+- **Abordagens:** A3, A6, A7, A9.
+- **Vínculos:** R-002, D-003, D-006, D-007, D-009.
+
+#### S-09 — Vazamento
+
+- **Prioridade:** I alta, D alta.
+- **Fonte:** ator não autorizado, log, artefato, modelo ou integração.
+- **Estímulo:** tentativa de acesso ou exposição acidental de dados pessoais ou
+  atributos sensíveis.
+- **Ambiente:** online, batch, observabilidade ou armazenamento.
+- **Artefato:** dados, seleções, logs, checkpoints, modelos e interfaces.
+- **Resposta:** negar acesso; minimizar e proteger dados; registrar evento sem
+  replicar o conteúdo sensível; acionar tratamento de incidente e preservar
+  evidências conforme política aprovada.
+- **Métrica (hipótese):** propor zero acessos não autorizados confirmados, cobertura
+  de controles e tempo de detecção; classificação, base legal e metas estão a definir.
+- **Abordagens:** A4, A7, A8, A9.
+- **Vínculos:** D-004, D-007, D-008, D-009; lacuna de segurança/LGPD.
+
+## 16. Pontos de sensibilidade
+
+Um ponto é sensível quando uma decisão altera diretamente um atributo prioritário ou
+o resultado de vários cenários.
+
+| ID | Decisão sensível | Cenários | Atributos afetados | Análise |
+|---|---|---|---|---|
+| PS-01 | Definição de novidade e semântica do watermark | S-01, S-02, S-03, S-04, S-05 | Integridade, recuperabilidade, rastreabilidade | Uma política de timestamp, offset ou ID muda quais dados entram e se reprocessamento é seguro. |
+| PS-02 | Ponto de commit entre modelo promovido e checkpoint | S-03, S-06, S-07 | Consistência, disponibilidade, rollback | Commit não atômico pode causar modelo publicado sem avanço correspondente, ou avanço sem modelo utilizável. |
+| PS-03 | Semântica de lock/lease e execução manual | S-03, S-04 | Confiabilidade, recuperação | Lease curto pode duplicar execução; lease longo pode bloquear recuperação. |
+| PS-04 | Política de promoção e critérios do baseline | S-06, S-07, S-08 | Qualidade, continuidade | Critérios permissivos favorecem atualização; critérios rígidos preservam estabilidade e podem atrasar atualização. |
+| PS-05 | Granularidade da linhagem e retenção | S-02, S-03, S-05, S-09 | Auditoria, custo, LGPD | Mais evidência melhora diagnóstico, mas aumenta armazenamento e exposição potencial. |
+| PS-06 | Localização da inferência | S-07, S-08, S-09 | Disponibilidade, segurança, compatibilidade | Serviço separado isola ciclos; inferência embutida reduz dependências, mas acopla deploy e modelo. |
+
+Nenhum ponto de sensibilidade é uma decisão aprovada; todos dependem de requisitos,
+stakeholders ou políticas ausentes.
+
+## 17. Trade-offs
+
+| ID | Escolha | Benefício | Custo/risco | Cenários |
+|---|---|---|---|---|
+| T-01 | Seleção materializada versus consulta no treino | Repetibilidade, auditoria e isolamento da seleção | Armazenamento e processamento adicionais | S-02, S-03, S-05 |
+| T-02 | Lock/lease versus paralelismo | Evita commits conflitantes | Pode reduzir disponibilidade ou exigir recuperação de lease | S-03, S-04 |
+| T-03 | Bloquear dados degradados versus continuar com alerta | Protege qualidade e linhagem | Pode atrasar atualização e exigir intervenção | S-05, S-08 |
+| T-04 | Promoção automática versus manual | Automática reduz espera; manual aumenta controle | Automática pode promover regressão; manual adiciona atraso e operação | S-06, S-07 |
+| T-05 | Reter evidências amplas versus mínimas | Auditoria/reprodução versus menor custo e exposição | Retenção ampla custa mais e pode aumentar superfície LGPD | S-02, S-03, S-09 |
+| T-06 | Registry/rollback formal versus artefato simples | Reversibilidade e governança versus menor complexidade inicial | Registry exige contratos e operação | S-06, S-07, S-08 |
+
+## 18. Riscos, não-riscos e temas de risco
+
+### Riscos confirmados ou derivados
+
+| ID | Risco | Cenários | Decisões relacionadas | Tratamento |
+|---|---|---|---|---|
+| ATAM-R-01 | Watermark incorreto inclui dados antigos ou perde dados atrasados. | S-02, S-03, S-05 | D-001, D-004, D-005 | Definir semântica de novidade, partição, atraso e reprocessamento antes de fechar a solução. |
+| ATAM-R-02 | Falha entre promoção e checkpoint deixa estado inconsistente. | S-03, S-06, S-07 | D-001, D-003, D-006 | Definir protocolo de commit/compensação e reconciliação. |
+| ATAM-R-03 | Lock expirado permite duas execuções ou lock preso impede recuperação. | S-03, S-04 | D-002, D-003 | Definir lease, renovação, autoridade de recuperação e testes de concorrência. |
+| ATAM-R-04 | Dados degradados treinam modelo sem decisão explícita. | S-05, S-06 | D-004, D-006 | Definir regras, limiares e política de bloqueio/aceitação. |
+| ATAM-R-05 | Candidato pior substitui baseline. | S-06, S-07 | D-005, D-006 | Exigir validação versionada, registro anterior e promoção reversível. |
+| ATAM-R-06 | Indisponibilidade é reportada como sucesso ou causa perda de estado. | S-01, S-03, S-08 | D-003, D-007 | Estados terminais explícitos, retries idempotentes e reconciliação. |
+| ATAM-R-07 | Dados pessoais aparecem em logs, seleções, artefatos ou modelo. | S-02, S-05, S-09 | D-004, D-007, D-008, D-009 | Classificar dados, minimizar, segregar acesso, proteger e definir retenção com orientação jurídica. |
+
+### Não-riscos no estado atual
+
+Estes itens não são riscos arquiteturais confirmados porque não há evidência
+documental suficiente para afirmar que ocorram:
+
+- um volume específico de dados ou uma taxa específica de requisições;
+- um SLA, latência, janela de execução ou custo máximo;
+- uma tecnologia de armazenamento, orquestração, registry ou observabilidade;
+- uma persona, permissão ou jornada de usuário concreta;
+- uma exigência de alta disponibilidade, multi-região ou escalabilidade horizontal;
+- uma regra de negócio sobre aceitação de modelo ou qualidade preditiva.
+
+Isso não significa que sejam irrelevantes; significa apenas que não devem ser
+tratados como fatos, riscos quantificados ou critérios de aprovação sem requisitos.
+
+### Temas de risco para elicitação
+
+1. **Semântica de dados novos:** fonte de verdade, offsets, atrasos, duplicidade e
+   correções retroativas.
+2. **Operação do cron:** fuso, horário, janela, execução manual, alertas, ownership,
+   retries e recuperação.
+3. **Governança de modelos:** baseline, métricas, aprovação, compatibilidade,
+   promoção, observação e rollback.
+4. **Segurança e LGPD:** classificação, finalidade, base legal, titulares, acesso,
+   retenção, eliminação e resposta a incidentes.
+5. **Continuidade:** comportamento online durante indisponibilidade, modelo ativo
+   anterior e política de degradação.
+6. **Economia:** limites de processamento, armazenamento, retenção e reprocessamento.
+7. **Escopo do produto:** personas, jornadas, funcionalidades e contratos da
+   aplicação em `Site/`.
+
+## 19. Conclusão ATAM e decisões pendentes
+
+Os maiores focos de atenção são a semântica de “dados novos” (PS-01), o commit
+coerente entre publicação e checkpoint (PS-02), a concorrência do cron (PS-03), os
+critérios de promoção (PS-04) e a fronteira entre linhagem, custo e LGPD (PS-05).
+Eles concentram os cenários de maior importância e dificuldade: S-02, S-03, S-05,
+S-06 e S-09.
+
+Não há base para declarar a arquitetura aprovada: faltam personas, requisitos de
+negócio, critérios de qualidade, métricas, políticas de dados/modelos e
+responsáveis. Antes de transformar A1–A9 em decisões, devem ser confirmados os
+temas de risco e os valores das métricas hipotéticas. A avaliação não altera
+`DOC-001`, `DOC-002`, `USR-001`, RA-001, RA-002 nem os riscos anteriores; apenas
+adiciona análise independente e rastreável.
